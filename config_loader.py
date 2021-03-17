@@ -21,13 +21,12 @@ import logging
 import warnings
 
 import yaml
-try:
-    from yaml import UnsafeLoader
-except ImportError:
-    from yaml import Loader as UnsafeLoader
+from yaml import UnsafeLoader
 
 from satpy import DatasetDict, DataQuery, DataID
-from satpy.config import CONFIG_PATH, get_entry_points_config_dirs, config_search_paths, recursive_dict_update
+from satpy._config import (get_entry_points_config_dirs, config_search_paths,
+                           glob_config)
+from satpy.utils import recursive_dict_update
 from satpy.dataset.dataid import minimal_default_keys_config
 
 logger = logging.getLogger(__name__)
@@ -45,9 +44,7 @@ def _convert_dep_info_to_data_query(dep_info):
 
 class _CompositeConfigHelper:
     """Helper class for parsing composite configurations.
-
     The provided `loaded_compositors` dictionary is updated inplace.
-
     """
 
     def __init__(self, loaded_compositors, sensor_id_keys):
@@ -113,9 +110,7 @@ class _CompositeConfigHelper:
 
 class _ModifierConfigHelper:
     """Helper class for parsing modifier configurations.
-
     The provided `loaded_modifiers` dictionary is updated inplace.
-
     """
 
     def __init__(self, loaded_modifiers, sensor_id_keys):
@@ -170,25 +165,34 @@ class _ModifierConfigHelper:
 class CompositorLoader:
     """Read compositors and modifiers using the configuration files on disk."""
 
-    def __init__(self, ppp_config_dir=None):
+    def __init__(self):
         """Initialize the compositor loader."""
-        if ppp_config_dir is None:
-            ppp_config_dir = CONFIG_PATH
         self.modifiers = {}
         self.compositors = {}
-        self.ppp_config_dir = ppp_config_dir
         # sensor -> { dict of DataID key information }
         self._sensor_dataid_keys = {}
+
+    @classmethod
+    def all_composite_sensors(cls):
+        """Get all sensor names from available composite configs."""
+        paths = get_entry_points_config_dirs('satpy.composites')
+        composite_configs = glob_config(
+            os.path.join("composites", "*.yaml"),
+            search_dirs=paths)
+        yaml_names = set([os.path.splitext(os.path.basename(fn))[0]
+                          for fn in composite_configs])
+        non_sensor_yamls = ('visir',)
+        sensor_names = [x for x in yaml_names if x not in non_sensor_yamls]
+        return sensor_names
 
     def load_sensor_composites(self, sensor_name):
         """Load all compositor configs for the provided sensor."""
         config_filename = sensor_name + ".yaml"
         logger.debug("Looking for composites config file %s", config_filename)
         paths = get_entry_points_config_dirs('satpy.composites')
-        paths.append(self.ppp_config_dir)
         composite_configs = config_search_paths(
             os.path.join("composites", config_filename),
-            *paths, check_exists=True)
+            search_dirs=paths, check_exists=True)
         if not composite_configs:
             logger.debug("No composite config found called %s",
                          config_filename)
@@ -196,7 +200,7 @@ class CompositorLoader:
         self._load_config(composite_configs)
 
     def get_compositor(self, key, sensor_names):
-        """Get the modifier for *sensor_names*."""
+        """Get the compositor for *sensor_names*."""
         for sensor_name in sensor_names:
             try:
                 return self.compositors[sensor_name][key]
@@ -215,24 +219,17 @@ class CompositorLoader:
 
     def load_compositors(self, sensor_names):
         """Load all compositor configs for the provided sensors.
-
         Args:
             sensor_names (list of strings): Sensor names that have matching
                                             ``sensor_name.yaml`` config files.
-
         Returns:
             (comps, mods): Where `comps` is a dictionary:
-
                     sensor_name -> composite ID -> compositor object
-
                 And `mods` is a dictionary:
-
                     sensor_name -> modifier name -> (modifier class,
                     modifiers options)
-
                 Note that these dictionaries are copies of those cached in
                 this object.
-
         """
         comps = {}
         mods = {}
